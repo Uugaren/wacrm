@@ -203,7 +203,7 @@ export async function POST(request: Request) {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function processUazapiPayload(body: any) {
-  console.log('[webhook Uazapi] Inbound payload event:', body?.event || body?.type || 'messages.upsert')
+  console.log('[webhook Uazapi] Inbound payload:', JSON.stringify(body))
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let items: any[] = []
@@ -217,7 +217,17 @@ async function processUazapiPayload(body: any) {
     }
   } else if (Array.isArray(body.messages)) {
     items = body.messages
-  } else if (body.key || body.message || body.remoteJid) {
+  } else if (
+    body.key ||
+    body.message ||
+    body.remoteJid ||
+    body.phone ||
+    body.content ||
+    body.text ||
+    body.chatJid ||
+    body.sender ||
+    body.from
+  ) {
     items = [body]
   }
 
@@ -251,20 +261,36 @@ async function processUazapiPayload(body: any) {
   }
 
   for (const item of items) {
-    const fromMe = item.key?.fromMe ?? item.fromMe
+    const fromMe =
+      item.key?.fromMe ??
+      item.fromMe ??
+      item.isFromMe ??
+      item.wasSentByApi ??
+      false
     if (fromMe === true) {
-      console.log('[webhook] Skipping Uazapi message where key.fromMe == true')
+      console.log('[webhook] Skipping Uazapi message where fromMe == true')
       continue
     }
 
-    const rawJid = item.key?.remoteJid || item.remoteJid || item.from || item.sender || ''
+    const rawJid =
+      item.key?.remoteJid ||
+      item.remoteJid ||
+      item.phone ||
+      item.chatJid ||
+      item.from ||
+      item.sender ||
+      ''
     if (!rawJid) continue
 
-    const digits = rawJid.replace('@s.whatsapp.net', '').replace('@c.us', '').replace('@g.us', '').replace(/\D/g, '')
+    const digits = String(rawJid)
+      .replace('@s.whatsapp.net', '')
+      .replace('@c.us', '')
+      .replace('@g.us', '')
+      .replace(/\D/g, '')
     if (!digits) continue
 
     const phone = `+${digits}`
-    const pushName = item.pushName || item.senderName || phone
+    const pushName = item.pushName || item.senderName || item.name || phone
     const contentText =
       item.message?.conversation ||
       item.message?.extendedTextMessage?.text ||
@@ -273,8 +299,10 @@ async function processUazapiPayload(body: any) {
       item.message?.documentMessage?.caption ||
       item.message?.buttonsResponseMessage?.selectedButtonId ||
       item.message?.listResponseMessage?.singleSelectReply?.selectedRowId ||
+      item.content ||
       item.text ||
       item.message?.text ||
+      item.body ||
       ''
 
     const messageId = item.key?.id || item.id || item.messageId || `uaz_${Date.now()}`
