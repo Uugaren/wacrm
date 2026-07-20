@@ -410,6 +410,7 @@ async function processUazapiPayload(body: any) {
     await dispatchWebhookEvent(supabaseAdmin(), accountId, 'message.received', {
       conversation_id: resolved.conversationId,
       contact_id: resolved.contactId,
+      phone,
       whatsapp_message_id: messageId,
       content_type: 'text',
       text: contentText,
