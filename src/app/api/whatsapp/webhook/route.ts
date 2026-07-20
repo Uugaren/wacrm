@@ -272,7 +272,8 @@ async function processUazapiPayload(body: any) {
       continue
     }
 
-    const rawJid =
+    let rawJid =
+      item.key?.remoteJidAlt ||
       item.key?.remoteJid ||
       item.remoteJid ||
       item.phone ||
@@ -280,12 +281,23 @@ async function processUazapiPayload(body: any) {
       item.from ||
       item.sender ||
       ''
-    if (!rawJid) continue
+
+    if (rawJid.includes('@lid') || rawJid.includes('@g.us') || rawJid.includes('broadcast')) {
+      const altJid = item.sender || item.from || item.participant || item.key?.participant || ''
+      if (altJid && !altJid.includes('@lid') && !altJid.includes('@g.us') && !altJid.includes('broadcast')) {
+        rawJid = altJid
+      }
+    }
+
+    if (!rawJid || rawJid.includes('status@broadcast') || rawJid.endsWith('@g.us')) {
+      console.log('[webhook Uazapi] Skipping non-direct JID:', rawJid)
+      continue
+    }
 
     const digits = String(rawJid)
       .replace('@s.whatsapp.net', '')
       .replace('@c.us', '')
-      .replace('@g.us', '')
+      .replace('@lid', '')
       .replace(/\D/g, '')
     if (!digits) continue
 
@@ -307,6 +319,8 @@ async function processUazapiPayload(body: any) {
 
     const messageId = item.key?.id || item.id || item.messageId || `uaz_${Date.now()}`
 
+    console.log(`[webhook Uazapi] Resolving conversation for ${phone} (${pushName})...`)
+
     // Use resolveConversation to find/create contact and conversation in Supabase
     let resolved
     try {
@@ -320,6 +334,8 @@ async function processUazapiPayload(body: any) {
       console.error('[webhook] resolveConversation failed:', err)
       continue
     }
+
+    console.log(`[webhook Uazapi] Saving message ${messageId} into conversation ${resolved.conversationId}...`)
 
     // Save inbound message in messages table
     const { error: msgErr } = await supabaseAdmin().from('messages').insert({
@@ -336,6 +352,8 @@ async function processUazapiPayload(body: any) {
       console.error('[webhook] Error inserting Uazapi message:', msgErr)
       continue
     }
+
+    console.log(`[webhook Uazapi] Message ${messageId} saved successfully!`)
 
     // Update conversation last_message_text, last_message_at, unread_count
     const { data: conv } = await supabaseAdmin()

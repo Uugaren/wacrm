@@ -7,8 +7,10 @@ const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 async function check() {
-  const { data: msgs } = await supabase.from('messages').select('*').order('created_at', { ascending: false }).limit(5);
-  console.log('LATEST MESSAGES IN DB:', msgs);
+  const { data: configs } = await supabase.from('whatsapp_config').select('*');
+  const { data: accts } = await supabase.from('accounts').select('*');
+  console.log('WHATSAPP CONFIGS IN DB:', configs);
+  console.log('ACCOUNTS IN DB:', accts);
 }
 
 check();
