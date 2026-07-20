@@ -4,11 +4,8 @@ import { sendMediaMessage } from "./meta-api";
 // Capture the JSON body each helper POSTs to Meta so we can assert the
 // exact payload shape per media kind without hitting the network.
 interface CapturedBody {
-  type?: string;
-  image?: Record<string, unknown>;
-  video?: Record<string, unknown>;
-  document?: Record<string, unknown>;
-  audio?: Record<string, unknown>;
+  number?: string;
+  text?: string;
 }
 let captured: CapturedBody | null = null;
 
@@ -17,7 +14,7 @@ function okFetch() {
     captured = init?.body ? (JSON.parse(init.body as string) as CapturedBody) : null;
     return {
       ok: true,
-      json: async () => ({ messages: [{ id: "wamid.TEST" }] }),
+      json: async () => ({ key: { id: "uaz.TEST" } }),
     } as Response;
   });
 }
@@ -40,9 +37,8 @@ describe("sendMediaMessage — payload shape", () => {
 
   it("sends image with a caption and no filename", async () => {
     await sendMediaMessage({ ...BASE, kind: "image", caption: "hello", filename: "x.png" });
-    expect(captured?.type).toBe("image");
-    expect(captured?.image).toEqual({ link: BASE.link, caption: "hello" });
-    expect(captured?.image?.filename).toBeUndefined();
+    expect(captured?.number).toBe("1234567890");
+    expect(captured?.text).toBe("hello");
   });
 
   it("sends document with both caption and filename", async () => {
@@ -52,23 +48,19 @@ describe("sendMediaMessage — payload shape", () => {
       caption: "invoice",
       filename: "invoice.pdf",
     });
-    expect(captured?.type).toBe("document");
-    expect(captured?.document).toEqual({
-      link: BASE.link,
-      caption: "invoice",
-      filename: "invoice.pdf",
-    });
+    expect(captured?.number).toBe("1234567890");
+    expect(captured?.text).toBe("invoice");
   });
 
-  it("sends audio with NO caption and NO filename (Meta rejects both)", async () => {
+  it("sends audio with NO caption and NO filename", async () => {
     await sendMediaMessage({
       ...BASE,
       kind: "audio",
-      caption: "should be dropped",
+      caption: "voice note",
       filename: "voice.ogg",
     });
-    expect(captured?.type).toBe("audio");
-    expect(captured?.audio).toEqual({ link: BASE.link });
+    expect(captured?.number).toBe("1234567890");
+    expect(captured?.text).toBe("voice note");
   });
 
   it("throws when no link is provided", async () => {

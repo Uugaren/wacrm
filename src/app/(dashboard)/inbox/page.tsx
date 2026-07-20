@@ -206,7 +206,17 @@ function InboxPageInner() {
         .eq("account_id", accountId)
         .maybeSingle();
 
-      setWhatsappConnected(data?.status === "connected");
+      if (data?.status === "connected") {
+        setWhatsappConnected(true);
+      } else {
+        try {
+          const res = await fetch("/api/whatsapp/config");
+          const configData = await res.json();
+          setWhatsappConnected(Boolean(configData.connected));
+        } catch {
+          setWhatsappConnected(false);
+        }
+      }
     };
 
     checkConnection();

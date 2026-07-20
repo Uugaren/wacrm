@@ -216,8 +216,8 @@ export async function getSubscribedApps(
 // ============================================================
 
 export interface SendTextMessageArgs {
-  phoneNumberId: string
-  accessToken: string
+  phoneNumberId?: string
+  accessToken?: string
   to: string
   text: string
   /** Meta's message_id of the message being replied to. Adds a `context` field
@@ -226,37 +226,58 @@ export interface SendTextMessageArgs {
 }
 
 /**
- * Send a free-form WhatsApp text message.
- * Only works inside the 24-hour customer service window.
+ * Send a WhatsApp text message via Uazapi API.
  */
 export async function sendTextMessage(
   args: SendTextMessageArgs
 ): Promise<MetaSendResult> {
-  const { phoneNumberId, accessToken, to, text, contextMessageId } = args
-  const url = `${META_API_BASE}/${phoneNumberId}/messages`
-  const body: Record<string, unknown> = {
-    messaging_product: 'whatsapp',
-    recipient_type: 'individual',
-    to,
-    type: 'text',
-    text: { body: text },
+  const { to, text } = args
+  const baseUrl = (process.env.UAZAPI_BASE_URL || 'https://jarentech.uazapi.com').replace(/\/+$/, '')
+  const token = process.env.UAZAPI_TOKEN || 'ccb5fd49-dc6f-47e8-9fa4-988bf9b3b4a5'
+  const instance = process.env.UAZAPI_INSTANCE_NAME || 'w7GXlg'
+
+  const url = `${baseUrl}/message/sendText/${instance}`
+  const formattedNumber = to.replace(/\D/g, '')
+
+  const payload = {
+    number: formattedNumber,
+    text,
   }
-  if (contextMessageId) {
-    body.context = { message_id: contextMessageId }
-  }
+
   const response = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${accessToken}`,
+      token,
+      apikey: token,
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(payload),
   })
+
   if (!response.ok) {
-    await throwMetaError(response, `Meta API error: ${response.status}`)
+    let errorMsg = `Uazapi API error: ${response.status}`
+    try {
+      const errData = await response.json()
+      if (errData?.message || errData?.error) {
+        errorMsg = typeof errData.message === 'string'
+          ? errData.message
+          : (typeof errData.error === 'string' ? errData.error : JSON.stringify(errData.error || errData))
+      }
+    } catch {
+      // response body wasn't JSON
+    }
+    throw new Error(errorMsg)
   }
+
   const data = await response.json()
-  return { messageId: data.messages[0].id }
+  const messageId =
+    data?.key?.id ||
+    data?.messageId ||
+    data?.id ||
+    data?.keyId ||
+    `uaz_${Date.now()}`
+
+  return { messageId: String(messageId) }
 }
 
 export type MediaKind = 'image' | 'video' | 'document' | 'audio'
@@ -290,39 +311,10 @@ export interface SendMediaMessageArgs {
 export async function sendMediaMessage(
   args: SendMediaMessageArgs,
 ): Promise<MetaSendResult> {
-  const { phoneNumberId, accessToken, to, kind, link, caption, filename, contextMessageId } = args
+  const { to, link, caption, filename, kind } = args
   if (!link) throw new Error('sendMediaMessage requires a link.')
-  const url = `${META_API_BASE}/${phoneNumberId}/messages`
-
-  // Audio accepts neither caption nor filename per Meta's spec — adding
-  // either yields a 400. image/video/document accept a caption; only
-  // document accepts a filename.
-  const media: Record<string, unknown> = { link }
-  if (caption && kind !== 'audio') media.caption = caption
-  if (kind === 'document' && filename) media.filename = filename
-
-  const body: Record<string, unknown> = {
-    messaging_product: 'whatsapp',
-    recipient_type: 'individual',
-    to,
-    type: kind,
-    [kind]: media,
-  }
-  if (contextMessageId) body.context = { message_id: contextMessageId }
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${accessToken}`,
-    },
-    body: JSON.stringify(body),
-  })
-  if (!response.ok) {
-    await throwMetaError(response, `Meta API error: ${response.status}`)
-  }
-  const data = await response.json()
-  return { messageId: data.messages[0].id }
+  const text = caption || (filename ? `[File: ${filename}] ${link}` : `[${kind}: ${link}]`)
+  return sendTextMessage({ to, text })
 }
 
 import type { MessageTemplate } from '@/types'
@@ -332,115 +324,24 @@ import {
 } from './template-send-builder'
 
 export interface SendTemplateMessageArgs {
-  phoneNumberId: string
-  accessToken: string
+  phoneNumberId?: string
+  accessToken?: string
   to: string
   templateName: string
   language?: string
-  /**
-   * Legacy body-only params. Kept for backward compat with callers
-   * that haven't migrated to the structured `template` + `messageParams`
-   * pair below. New callers should pass `template` so media headers
-   * and URL buttons land on the send.
-   */
   params?: string[]
-  /**
-   * The template row from message_templates. When provided, the helper
-   * builds the full components array (header + body + buttons) via
-   * buildSendComponents — that's the only way image/video/document
-   * headers and URL-with-variable buttons actually reach the recipient.
-   */
   template?: MessageTemplate
-  /**
-   * Structured per-send values. Body variables go in `body`; header
-   * text variables in `headerText`; media overrides in
-   * `headerMediaUrl` / `headerMediaId`; URL/COPY_CODE button values
-   * in `buttonParams` keyed by index.
-   */
   messageParams?: SendTimeParams
-  /** Meta's message_id of the message being replied to. */
   contextMessageId?: string
 }
 
-/**
- * Send a pre-approved WhatsApp message template. Required outside
- * the 24-hour window and for any first-touch messaging.
- *
- * Caller paths:
- *   - Legacy: pass `params: string[]` (body only). Same behaviour as
- *     before this helper learned about media + buttons.
- *   - Structured: pass `template` (and optionally `messageParams`).
- *     The full components array is built from the row so media
- *     headers + URL buttons land correctly.
- */
 export async function sendTemplateMessage(
   args: SendTemplateMessageArgs
 ): Promise<MetaSendResult> {
-  const {
-    phoneNumberId,
-    accessToken,
-    to,
-    templateName,
-    language = 'en_US',
-    params,
-    template,
-    messageParams,
-    contextMessageId,
-  } = args
-  const url = `${META_API_BASE}/${phoneNumberId}/messages`
-
-  const templatePayload: Record<string, unknown> = {
-    name: templateName,
-    language: { code: language },
-  }
-
-  if (template) {
-    const components = buildSendComponents(template, {
-      // Legacy callers pass body values in `params`; fold them into
-      // `messageParams.body` so the new path covers them too.
-      body: messageParams?.body ?? params,
-      headerText: messageParams?.headerText,
-      headerMediaUrl: messageParams?.headerMediaUrl,
-      headerMediaId: messageParams?.headerMediaId,
-      buttonParams: messageParams?.buttonParams,
-    })
-    if (components.length > 0) {
-      templatePayload.components = components
-    }
-  } else if (params && params.length > 0) {
-    // Legacy body-only path — no template row available.
-    templatePayload.components = [
-      {
-        type: 'body',
-        parameters: params.map((p) => ({ type: 'text', text: String(p) })),
-      },
-    ]
-  }
-
-  const body: Record<string, unknown> = {
-    messaging_product: 'whatsapp',
-    recipient_type: 'individual',
-    to,
-    type: 'template',
-    template: templatePayload,
-  }
-  if (contextMessageId) {
-    body.context = { message_id: contextMessageId }
-  }
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${accessToken}`,
-    },
-    body: JSON.stringify(body),
-  })
-  if (!response.ok) {
-    await throwMetaError(response, `Meta API error: ${response.status}`)
-  }
-  const data = await response.json()
-  return { messageId: data.messages[0].id }
+  const { to, templateName, params, template } = args
+  const bodyText = template?.body_text || (params ? params.join(' ') : '')
+  const text = bodyText ? `${templateName}: ${bodyText}` : `[Template: ${templateName}]`
+  return sendTextMessage({ to, text })
 }
 
 // ============================================================
@@ -795,42 +696,9 @@ export async function sendInteractiveButtons(
     }
   }
 
-  const interactive: Record<string, unknown> = {
-    type: 'button',
-    body: { text: bodyText },
-    action: {
-      buttons: buttons.map((b) => ({
-        type: 'reply',
-        reply: { id: b.id, title: b.title },
-      })),
-    },
-  }
-  if (headerText) interactive.header = { type: 'text', text: headerText }
-  if (footerText) interactive.footer = { text: footerText }
-
-  const body: Record<string, unknown> = {
-    messaging_product: 'whatsapp',
-    recipient_type: 'individual',
-    to,
-    type: 'interactive',
-    interactive,
-  }
-  if (contextMessageId) body.context = { message_id: contextMessageId }
-
-  const url = `${META_API_BASE}/${phoneNumberId}/messages`
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${accessToken}`,
-    },
-    body: JSON.stringify(body),
-  })
-  if (!response.ok) {
-    await throwMetaError(response, `Meta API error: ${response.status}`)
-  }
-  const data = await response.json()
-  return { messageId: data.messages[0].id }
+  const buttonOptions = buttons.map((b, i) => `${i + 1}. ${b.title}`).join('\n')
+  const fullText = `${bodyText}\n\n${buttonOptions}`
+  return sendTextMessage({ to, text: fullText })
 }
 
 export interface InteractiveListRow {
@@ -849,34 +717,22 @@ export interface InteractiveListSection {
 }
 
 export interface SendInteractiveListArgs {
-  phoneNumberId: string
-  accessToken: string
+  phoneNumberId?: string
+  accessToken?: string
   to: string
   bodyText: string
-  /** Label of the tap-to-expand button on the message bubble. */
   buttonLabel: string
   headerText?: string
   footerText?: string
-  /**
-   * 1–10 rows TOTAL across all sections. Meta caps the *total*, not
-   * per-section. Validation enforces this before send.
-   */
   sections: InteractiveListSection[]
   contextMessageId?: string
 }
 
-/**
- * Send an interactive message with a tap-to-expand list of selectable
- * rows. Use when there are more options than the 3-button limit allows.
- * Webhook arrives with `messages[0].interactive.list_reply.id` set to
- * the matching row.id.
- */
 export async function sendInteractiveList(
   args: SendInteractiveListArgs
 ): Promise<MetaSendResult> {
   const {
-    phoneNumberId, accessToken, to,
-    bodyText, buttonLabel, headerText, footerText, sections, contextMessageId,
+    to, bodyText, buttonLabel, headerText, footerText, sections,
   } = args
   validateInteractiveBody(bodyText)
   validateInteractiveHeaderFooter(headerText, footerText)
@@ -922,47 +778,9 @@ export async function sendInteractiveList(
     }
   }
 
-  const interactive: Record<string, unknown> = {
-    type: 'list',
-    body: { text: bodyText },
-    action: {
-      button: buttonLabel,
-      sections: sections.map((s) => ({
-        ...(s.title ? { title: s.title } : {}),
-        rows: s.rows.map((r) => ({
-          id: r.id,
-          title: r.title,
-          ...(r.description ? { description: r.description } : {}),
-        })),
-      })),
-    },
-  }
-  if (headerText) interactive.header = { type: 'text', text: headerText }
-  if (footerText) interactive.footer = { text: footerText }
-
-  const body: Record<string, unknown> = {
-    messaging_product: 'whatsapp',
-    recipient_type: 'individual',
-    to,
-    type: 'interactive',
-    interactive,
-  }
-  if (contextMessageId) body.context = { message_id: contextMessageId }
-
-  const url = `${META_API_BASE}/${phoneNumberId}/messages`
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${accessToken}`,
-    },
-    body: JSON.stringify(body),
-  })
-  if (!response.ok) {
-    await throwMetaError(response, `Meta API error: ${response.status}`)
-  }
-  const data = await response.json()
-  return { messageId: data.messages[0].id }
+  const rowOptions = sections.flatMap((s) => s.rows.map((r) => r.title)).join('\n')
+  const fullText = `${bodyText}\n\n${rowOptions}`
+  return sendTextMessage({ to, text: fullText })
 }
 
 function validateInteractiveBody(bodyText: string): void {

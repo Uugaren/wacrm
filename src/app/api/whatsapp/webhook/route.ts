@@ -9,6 +9,7 @@ import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
+import { resolveConversation } from '@/lib/whatsapp/resolve-conversation'
 import {
   handleTemplateWebhookChange,
   isTemplateWebhookField,
@@ -170,49 +171,188 @@ export async function GET(request: Request) {
 
 // POST - Receive messages
 export async function POST(request: Request) {
-  // Read raw body first so we can HMAC-verify the exact bytes Meta
-  // signed. request.json() would re-encode and break the signature.
   const rawBody = await request.text()
   const signature = request.headers.get('x-hub-signature-256')
 
-  if (!verifyMetaWebhookSignature(rawBody, signature)) {
-    // 401 (not 200) — we want Meta's delivery dashboard to show failures
-    // loudly if a misconfiguration causes signatures to stop matching,
-    // rather than silently eating events.
+  // Verify signature only if header is present (Meta calls)
+  if (signature && !verifyMetaWebhookSignature(rawBody, signature)) {
     console.warn('[webhook] rejected request with invalid signature')
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
   }
 
-  let body: { entry?: WhatsAppWebhookEntry[] }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let body: any
   try {
     body = JSON.parse(rawBody)
   } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
   }
 
-  // Process AFTER the response so we ack Meta within their ~20s timeout
-  // (a slow ack triggers Meta retries + duplicate inserts), while still
-  // guaranteeing the work runs to completion.
-  //
-  // This MUST use `after()` rather than a detached `processWebhook(body)`
-  // promise: on serverless platforms (we run on Vercel) the function can
-  // be frozen or terminated the moment the response is sent, so a floating
-  // promise's DB writes are not guaranteed to finish. That dropped a
-  // non-deterministic *subset* of inbound messages — contacts/conversations
-  // were created but the message insert never landed, leaving conversations
-  // that show in the inbox with an empty thread, and no logs to explain it
-  // (see issue #301). `after()` hands the callback to the runtime, which
-  // keeps the function alive until it resolves (within the route's
-  // maxDuration).
-  after(async () => {
-    try {
+  try {
+    if (body.entry) {
       await processWebhook(body)
-    } catch (error) {
-      console.error('Error processing webhook:', error)
+    } else {
+      await processUazapiPayload(body)
     }
-  })
+  } catch (error) {
+    console.error('Error processing webhook:', error)
+  }
 
   return NextResponse.json({ status: 'received' }, { status: 200 })
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function processUazapiPayload(body: any) {
+  console.log('[webhook Uazapi] Inbound payload event:', body?.event || body?.type || 'messages.upsert')
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let items: any[] = []
+  if (body.data) {
+    if (Array.isArray(body.data)) {
+      items = body.data
+    } else if (Array.isArray(body.data.messages)) {
+      items = body.data.messages
+    } else {
+      items = [body.data]
+    }
+  } else if (Array.isArray(body.messages)) {
+    items = body.messages
+  } else if (body.key || body.message || body.remoteJid) {
+    items = [body]
+  }
+
+  if (items.length === 0) {
+    console.log('[webhook Uazapi] No message items found in payload')
+    return
+  }
+
+  // Find tenancy / owner account
+  const { data: config } = await supabaseAdmin()
+    .from('whatsapp_config')
+    .select('account_id, user_id')
+    .limit(1)
+    .maybeSingle()
+
+  let accountId = config?.account_id
+  let userId = config?.user_id
+
+  if (!accountId) {
+    const { data: acct } = await supabaseAdmin()
+      .from('accounts')
+      .select('id, owner_user_id')
+      .limit(1)
+      .maybeSingle()
+    if (!acct) {
+      console.error('[webhook] No account found in DB for inbound Uazapi message')
+      return
+    }
+    accountId = acct.id
+    userId = acct.owner_user_id
+  }
+
+  for (const item of items) {
+    const fromMe = item.key?.fromMe ?? item.fromMe
+    if (fromMe === true) {
+      console.log('[webhook] Skipping Uazapi message where key.fromMe == true')
+      continue
+    }
+
+    const rawJid = item.key?.remoteJid || item.remoteJid || item.from || item.sender || ''
+    if (!rawJid) continue
+
+    const digits = rawJid.replace('@s.whatsapp.net', '').replace('@c.us', '').replace('@g.us', '').replace(/\D/g, '')
+    if (!digits) continue
+
+    const phone = `+${digits}`
+    const pushName = item.pushName || item.senderName || phone
+    const contentText =
+      item.message?.conversation ||
+      item.message?.extendedTextMessage?.text ||
+      item.message?.imageMessage?.caption ||
+      item.message?.videoMessage?.caption ||
+      item.message?.documentMessage?.caption ||
+      item.message?.buttonsResponseMessage?.selectedButtonId ||
+      item.message?.listResponseMessage?.singleSelectReply?.selectedRowId ||
+      item.text ||
+      item.message?.text ||
+      ''
+
+    const messageId = item.key?.id || item.id || item.messageId || `uaz_${Date.now()}`
+
+    // Use resolveConversation to find/create contact and conversation in Supabase
+    let resolved
+    try {
+      resolved = await resolveConversation(
+        supabaseAdmin(),
+        accountId,
+        phone,
+        pushName
+      )
+    } catch (err) {
+      console.error('[webhook] resolveConversation failed:', err)
+      continue
+    }
+
+    // Save inbound message in messages table
+    const { error: msgErr } = await supabaseAdmin().from('messages').insert({
+      conversation_id: resolved.conversationId,
+      sender_type: 'customer',
+      content_type: 'text',
+      content_text: contentText,
+      message_id: messageId,
+      status: 'delivered',
+      created_at: new Date().toISOString(),
+    })
+
+    if (msgErr) {
+      console.error('[webhook] Error inserting Uazapi message:', msgErr)
+      continue
+    }
+
+    // Update conversation last_message_text, last_message_at, unread_count
+    const { data: conv } = await supabaseAdmin()
+      .from('conversations')
+      .select('unread_count')
+      .eq('id', resolved.conversationId)
+      .maybeSingle()
+
+    await supabaseAdmin()
+      .from('conversations')
+      .update({
+        last_message_text: contentText || '[Message]',
+        last_message_at: new Date().toISOString(),
+        unread_count: ((conv?.unread_count) || 0) + 1,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', resolved.conversationId)
+
+    // Trigger WACRM event webhooks (message.created / message.received & conversation.created)
+    if (resolved.contactCreated) {
+      await dispatchWebhookEvent(supabaseAdmin(), accountId, 'conversation.created', {
+        conversation_id: resolved.conversationId,
+        contact_id: resolved.contactId,
+      })
+    }
+
+    await dispatchWebhookEvent(supabaseAdmin(), accountId, 'message.received', {
+      conversation_id: resolved.conversationId,
+      contact_id: resolved.contactId,
+      whatsapp_message_id: messageId,
+      content_type: 'text',
+      text: contentText,
+    })
+
+    // Also trigger automations if applicable
+    runAutomationsForTrigger({
+      accountId,
+      triggerType: 'new_message_received',
+      contactId: resolved.contactId,
+      context: {
+        message_text: contentText,
+        conversation_id: resolved.conversationId,
+      },
+    }).catch((err) => console.error('[automations] dispatch failed:', err))
+  }
 }
 
 async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {

@@ -60,7 +60,7 @@ export async function resolveConversationByPhone(
     .select('id')
     .eq('account_id', accountId)
     .maybeSingle();
-  if (!config) {
+  if (!config && !process.env.UAZAPI_TOKEN && !process.env.UAZAPI_BASE_URL) {
     throw new SendMessageError(
       'whatsapp_not_configured',
       'WhatsApp not configured. Please set up your WhatsApp integration first.',
@@ -151,6 +151,8 @@ export async function resolveConversationByPhone(
 
   return { conversationId, contactId, contactCreated };
 }
+
+export const resolveConversation = resolveConversationByPhone;
 
 /**
  * Find (oldest-first) or create the single conversation for

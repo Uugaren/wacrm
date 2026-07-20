@@ -100,7 +100,7 @@ describe("sendInteractiveButtons — validation", () => {
           body: JSON.parse(String(init.body)),
         };
         return new Response(
-          JSON.stringify({ messages: [{ id: "wamid.PASS" }] }),
+          JSON.stringify({ key: { id: "uaz.PASS" } }),
           { status: 200 },
         );
       }),
@@ -116,27 +116,13 @@ describe("sendInteractiveButtons — validation", () => {
       ],
     });
 
-    expect(result).toEqual({ messageId: "wamid.PASS" });
+    expect(result).toEqual({ messageId: "uaz.PASS" });
     expect(captured).not.toBeNull();
     expect(captured!.method).toBe("POST");
-    expect(captured!.url).toContain("test-phone/messages");
+    expect(captured!.url).toContain("/message/sendText/");
     expect(captured!.body).toMatchObject({
-      messaging_product: "whatsapp",
-      recipient_type: "individual",
-      to: "1234567890",
-      type: "interactive",
-      interactive: {
-        type: "button",
-        body: { text: "Body text" },
-        header: { type: "text", text: "Hello" },
-        footer: { text: "Tap one" },
-        action: {
-          buttons: [
-            { type: "reply", reply: { id: "yes", title: "Yes" } },
-            { type: "reply", reply: { id: "no", title: "No" } },
-          ],
-        },
-      },
+      number: "1234567890",
+      text: "Body text\n\n1. Yes\n2. No",
     });
   });
 });
@@ -224,7 +210,7 @@ describe("sendInteractiveList — validation", () => {
       vi.fn(async (_url: string, init: RequestInit) => {
         captured = { body: JSON.parse(String(init.body)) };
         return new Response(
-          JSON.stringify({ messages: [{ id: "wamid.LIST" }] }),
+          JSON.stringify({ key: { id: "uaz.LIST" } }),
           { status: 200 },
         );
       }),
@@ -244,26 +230,11 @@ describe("sendInteractiveList — validation", () => {
       ],
     });
 
-    expect(result).toEqual({ messageId: "wamid.LIST" });
+    expect(result).toEqual({ messageId: "uaz.LIST" });
     expect(captured).not.toBeNull();
     expect(captured!.body).toMatchObject({
-      type: "interactive",
-      interactive: {
-        type: "list",
-        body: { text: "Body text" },
-        action: {
-          button: "Open menu",
-          sections: [
-            {
-              title: "Orders",
-              rows: [
-                { id: "order_1", title: "Order #1", description: "€12" },
-                { id: "order_2", title: "Order #2" },
-              ],
-            },
-          ],
-        },
-      },
+      number: "1234567890",
+      text: "Body text\n\nOrder #1\nOrder #2",
     });
   });
 });

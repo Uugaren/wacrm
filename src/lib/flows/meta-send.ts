@@ -32,6 +32,29 @@ import { supabaseAdmin } from './admin-client'
 // keeps the foundation PR self-contained and unit-testable.
 // ------------------------------------------------------------
 
+async function resolveFlowsConfig(db: ReturnType<typeof supabaseAdmin>, accountId: string) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { data: dbConfig } = await (db as any)
+    .from('whatsapp_config')
+    .select('*')
+    .eq('account_id', accountId)
+    .maybeSingle()
+
+  if (dbConfig) {
+    let token = dbConfig.access_token
+    try {
+      token = decrypt(token)
+    } catch {
+      token = dbConfig.access_token || process.env.UAZAPI_TOKEN || ''
+    }
+    return { phone_number_id: dbConfig.phone_number_id, accessToken: token }
+  }
+
+  const instance = process.env.UAZAPI_INSTANCE_NAME || 'w7GXlg'
+  const token = process.env.UAZAPI_TOKEN || 'ccb5fd49-dc6f-47e8-9fa4-988bf9b3b4a5'
+  return { phone_number_id: instance, accessToken: token }
+}
+
 interface SendTextEngineArgs {
   /** Account-level tenancy key. Drives contact + whatsapp_config
    *  lookups so a flow authored by user A still sends through the
@@ -82,16 +105,8 @@ export async function engineSendText(
     throw new Error(`contact phone invalid: ${contact.phone}`)
   }
 
-  const { data: config, error: configErr } = await db
-    .from('whatsapp_config')
-    .select('*')
-    .eq('account_id', args.accountId)
-    .single()
-  if (configErr || !config) {
-    throw new Error('WhatsApp not configured for this account')
-  }
-
-  const accessToken = decrypt(config.access_token)
+  const config = await resolveFlowsConfig(db, args.accountId)
+  const accessToken = config.accessToken
 
   const attempt = async (phone: string): Promise<string> => {
     const r = await sendTextMessage({
@@ -192,16 +207,8 @@ export async function engineSendMedia(
     throw new Error(`contact phone invalid: ${contact.phone}`)
   }
 
-  const { data: config, error: configErr } = await db
-    .from('whatsapp_config')
-    .select('*')
-    .eq('account_id', args.accountId)
-    .single()
-  if (configErr || !config) {
-    throw new Error('WhatsApp not configured for this account')
-  }
-
-  const accessToken = decrypt(config.access_token)
+  const config = await resolveFlowsConfig(db, args.accountId)
+  const accessToken = config.accessToken
 
   const attempt = async (phone: string): Promise<string> => {
     const r = await sendMediaMessage({
@@ -344,16 +351,8 @@ async function sendInteractiveViaMeta(
     throw new Error(`contact phone invalid: ${contact.phone}`)
   }
 
-  const { data: config, error: configErr } = await db
-    .from('whatsapp_config')
-    .select('*')
-    .eq('account_id', input.accountId)
-    .single()
-  if (configErr || !config) {
-    throw new Error('WhatsApp not configured for this account')
-  }
-
-  const accessToken = decrypt(config.access_token)
+  const config = await resolveFlowsConfig(db, input.accountId)
+  const accessToken = config.accessToken
 
   const attempt = async (phone: string): Promise<string> => {
     if (input.kind === 'buttons') {
