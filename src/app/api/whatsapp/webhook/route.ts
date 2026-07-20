@@ -201,13 +201,43 @@ export async function POST(request: Request) {
   return NextResponse.json({ status: 'received' }, { status: 200 })
 }
 
+function extractUazapiPhone(item: any, body: any): string {
+  const candidates = [
+    item.sender_pn,
+    item.chatid,
+    body?.chat?.wa_chatid,
+    body?.chat?.phone,
+    item.phone,
+    item.key?.remoteJidAlt,
+    item.key?.remoteJid,
+    item.remoteJid,
+    item.sender,
+    item.from,
+    item.chatJid,
+  ]
+
+  for (const cand of candidates) {
+    if (!cand) continue
+    const str = String(cand)
+    if (str.includes('@lid') || str.includes('broadcast') || str.endsWith('@g.us')) continue
+
+    const digits = str.replace('@s.whatsapp.net', '').replace('@c.us', '').replace(/\D/g, '')
+    if (digits.length >= 8 && digits.length <= 15) {
+      return `+${digits}`
+    }
+  }
+  return ''
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function processUazapiPayload(body: any) {
   console.log('[webhook Uazapi] Inbound payload:', JSON.stringify(body))
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let items: any[] = []
-  if (body.data) {
+  if (body.message) {
+    items = Array.isArray(body.message) ? body.message : [body.message]
+  } else if (body.data) {
     if (Array.isArray(body.data)) {
       items = body.data
     } else if (Array.isArray(body.data.messages)) {
@@ -219,7 +249,6 @@ async function processUazapiPayload(body: any) {
     items = body.messages
   } else if (
     body.key ||
-    body.message ||
     body.remoteJid ||
     body.phone ||
     body.content ||
@@ -267,38 +296,23 @@ async function processUazapiPayload(body: any) {
       item.isFromMe ??
       false
 
-    let rawJid =
-      item.key?.remoteJidAlt ||
-      item.key?.remoteJid ||
-      item.remoteJid ||
-      item.phone ||
-      item.chatJid ||
-      item.from ||
-      item.sender ||
-      ''
-
-    if (rawJid.includes('@lid') || rawJid.includes('@g.us') || rawJid.includes('broadcast')) {
-      const altJid = item.sender || item.from || item.participant || item.key?.participant || ''
-      if (altJid && !altJid.includes('@lid') && !altJid.includes('@g.us') && !altJid.includes('broadcast')) {
-        rawJid = altJid
-      }
-    }
-
-    if (!rawJid || rawJid.includes('status@broadcast') || rawJid.endsWith('@g.us')) {
-      console.log('[webhook Uazapi] Skipping non-direct JID:', rawJid)
+    const phone = extractUazapiPhone(item, body)
+    if (!phone) {
+      console.log('[webhook Uazapi] Could not extract valid E.164 phone from item/body:', JSON.stringify(item))
       continue
     }
 
-    const digits = String(rawJid)
-      .replace('@s.whatsapp.net', '')
-      .replace('@c.us', '')
-      .replace('@lid', '')
-      .replace(/\D/g, '')
-    if (!digits) continue
+    const pushName =
+      item.senderName ||
+      body?.chat?.wa_contactName ||
+      body?.chat?.name ||
+      item.pushName ||
+      item.name ||
+      phone
 
-    const phone = `+${digits}`
-    const pushName = item.pushName || item.senderName || item.name || phone
     const contentText =
+      item.text ||
+      item.content ||
       item.message?.conversation ||
       item.message?.extendedTextMessage?.text ||
       item.message?.imageMessage?.caption ||
@@ -306,13 +320,16 @@ async function processUazapiPayload(body: any) {
       item.message?.documentMessage?.caption ||
       item.message?.buttonsResponseMessage?.selectedButtonId ||
       item.message?.listResponseMessage?.singleSelectReply?.selectedRowId ||
-      item.content ||
-      item.text ||
       item.message?.text ||
       item.body ||
       ''
 
-    const messageId = item.key?.id || item.id || item.messageId || `uaz_${Date.now()}`
+    const messageId =
+      item.messageid ||
+      item.key?.id ||
+      item.id ||
+      item.messageId ||
+      `uaz_${Date.now()}`
 
     // Deduplicate: skip if this message_id was already inserted by WACRM API send
     const { data: existingMsg } = await supabaseAdmin()
