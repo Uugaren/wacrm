@@ -265,12 +265,7 @@ async function processUazapiPayload(body: any) {
       item.key?.fromMe ??
       item.fromMe ??
       item.isFromMe ??
-      item.wasSentByApi ??
       false
-    if (fromMe === true) {
-      console.log('[webhook] Skipping Uazapi message where fromMe == true')
-      continue
-    }
 
     let rawJid =
       item.key?.remoteJidAlt ||
@@ -319,7 +314,19 @@ async function processUazapiPayload(body: any) {
 
     const messageId = item.key?.id || item.id || item.messageId || `uaz_${Date.now()}`
 
-    console.log(`[webhook Uazapi] Resolving conversation for ${phone} (${pushName})...`)
+    // Deduplicate: skip if this message_id was already inserted by WACRM API send
+    const { data: existingMsg } = await supabaseAdmin()
+      .from('messages')
+      .select('id')
+      .eq('message_id', messageId)
+      .maybeSingle()
+
+    if (existingMsg) {
+      console.log(`[webhook Uazapi] Message ${messageId} already exists in DB — skipping duplicate`)
+      continue
+    }
+
+    console.log(`[webhook Uazapi] Resolving conversation for ${phone} (${pushName}, fromMe: ${fromMe})...`)
 
     // Use resolveConversation to find/create contact and conversation in Supabase
     let resolved
@@ -335,12 +342,13 @@ async function processUazapiPayload(body: any) {
       continue
     }
 
-    console.log(`[webhook Uazapi] Saving message ${messageId} into conversation ${resolved.conversationId}...`)
+    const senderType = fromMe ? 'agent' : 'customer'
+    console.log(`[webhook Uazapi] Saving message ${messageId} (${senderType}) into conversation ${resolved.conversationId}...`)
 
-    // Save inbound message in messages table
+    // Save message in messages table
     const { error: msgErr } = await supabaseAdmin().from('messages').insert({
       conversation_id: resolved.conversationId,
-      sender_type: 'customer',
+      sender_type: senderType,
       content_type: 'text',
       content_text: contentText,
       message_id: messageId,
@@ -362,12 +370,14 @@ async function processUazapiPayload(body: any) {
       .eq('id', resolved.conversationId)
       .maybeSingle()
 
+    const unreadInc = fromMe ? 0 : 1
+
     await supabaseAdmin()
       .from('conversations')
       .update({
         last_message_text: contentText || '[Message]',
         last_message_at: new Date().toISOString(),
-        unread_count: ((conv?.unread_count) || 0) + 1,
+        unread_count: ((conv?.unread_count) || 0) + unreadInc,
         updated_at: new Date().toISOString(),
       })
       .eq('id', resolved.conversationId)
