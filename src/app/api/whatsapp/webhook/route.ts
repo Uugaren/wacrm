@@ -407,17 +407,28 @@ async function processUazapiPayload(body: any) {
       })
     }
 
-    await dispatchWebhookEvent(supabaseAdmin(), accountId, 'message.received', {
-      conversation_id: resolved.conversationId,
-      contact_id: resolved.contactId,
-      phone,
-      sender_name: pushName,
-      timestamp: new Date().toISOString(),
-      timestamp_unix: Math.floor(Date.now() / 1000),
-      whatsapp_message_id: messageId,
-      content_type: 'text',
-      text: contentText,
-    })
+    const { data: n8nConfig } = await supabaseAdmin()
+      .from('n8n_config')
+      .select('is_active, system_prompt')
+      .eq('account_id', accountId)
+      .maybeSingle()
+
+    if (!n8nConfig || n8nConfig.is_active !== false) {
+      await dispatchWebhookEvent(supabaseAdmin(), accountId, 'message.received', {
+        conversation_id: resolved.conversationId,
+        contact_id: resolved.contactId,
+        phone,
+        sender_name: pushName,
+        timestamp: new Date().toISOString(),
+        timestamp_unix: Math.floor(Date.now() / 1000),
+        system_prompt: n8nConfig?.system_prompt || 'Você é um assistente virtual atencioso e eficiente de atendimento via WhatsApp.',
+        whatsapp_message_id: messageId,
+        content_type: 'text',
+        text: contentText,
+      })
+    } else {
+      console.log(`[webhook Uazapi] n8n automation is disabled for account ${accountId} — skipping message.received webhook`)
+    }
 
     // Also trigger automations if applicable
     runAutomationsForTrigger({
@@ -1034,17 +1045,28 @@ async function processMessage(
   // when the account has no matching endpoint and never throws.
   // (conversation.created is emitted earlier, right after the thread is
   // opened.)
-  await dispatchWebhookEvent(supabaseAdmin(), accountId, 'message.received', {
-    conversation_id: conversation.id,
-    contact_id: contactRecord.id,
-    phone: contactRecord.phone,
-    sender_name: contactRecord.name,
-    timestamp: new Date().toISOString(),
-    timestamp_unix: Math.floor(Date.now() / 1000),
-    whatsapp_message_id: message.id,
-    content_type: contentType,
-    text: contentText,
-  })
+  const { data: n8nConfig } = await supabaseAdmin()
+    .from('n8n_config')
+    .select('is_active, system_prompt')
+    .eq('account_id', accountId)
+    .maybeSingle()
+
+  if (!n8nConfig || n8nConfig.is_active !== false) {
+    await dispatchWebhookEvent(supabaseAdmin(), accountId, 'message.received', {
+      conversation_id: conversation.id,
+      contact_id: contactRecord.id,
+      phone: contactRecord.phone,
+      sender_name: contactRecord.name,
+      timestamp: new Date().toISOString(),
+      timestamp_unix: Math.floor(Date.now() / 1000),
+      system_prompt: n8nConfig?.system_prompt || 'Você é um assistente virtual atencioso e eficiente de atendimento via WhatsApp.',
+      whatsapp_message_id: message.id,
+      content_type: contentType,
+      text: contentText,
+    })
+  } else {
+    console.log(`[webhook Meta] n8n automation is disabled for account ${accountId} — skipping message.received webhook`)
+  }
 }
 
 async function parseMessageContent(
