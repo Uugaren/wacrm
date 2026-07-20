@@ -236,7 +236,7 @@ export async function sendTextMessage(
   const token = process.env.UAZAPI_TOKEN || 'ccb5fd49-dc6f-47e8-9fa4-988bf9b3b4a5'
   const instance = process.env.UAZAPI_INSTANCE_NAME || 'w7GXlg'
 
-  const url = `${baseUrl}/message/sendText/${instance}`
+  const url = `${baseUrl}/send/text`
   const formattedNumber = to.replace(/\D/g, '')
 
   const payload = {

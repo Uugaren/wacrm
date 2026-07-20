@@ -119,7 +119,7 @@ describe("sendInteractiveButtons — validation", () => {
     expect(result).toEqual({ messageId: "uaz.PASS" });
     expect(captured).not.toBeNull();
     expect(captured!.method).toBe("POST");
-    expect(captured!.url).toContain("/message/sendText/");
+    expect(captured!.url).toContain("/send/text");
     expect(captured!.body).toMatchObject({
       number: "1234567890",
       text: "Body text\n\n1. Yes\n2. No",
